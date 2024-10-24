@@ -1,5 +1,3 @@
-# app.py
-
 from fastapi import FastAPI, Request, HTTPException
 from starlette.responses import JSONResponse
 from models import RunCodeRequest
@@ -7,13 +5,12 @@ import requests
 import hashlib
 from datetime import datetime
 import pytz
-import os
 import PyPDF2
-import uuid
 import logging
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from io import BytesIO  # Import BytesIO
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -36,23 +33,23 @@ def authenticate_api_key(api_key: str):
     if api_key not in VALID_API_KEYS:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-def download_pdf(url, file_name):
+def download_pdf(url):
     response = requests.get(url, allow_redirects=True)
     if response.status_code == 200:
-        with open(file_name, 'wb') as f:
-            f.write(response.content)
-        logging.info(f"PDF downloaded successfully: {file_name}")
+        pdf_bytes = BytesIO(response.content)
+        logging.info(f"PDF downloaded successfully.")
+        return pdf_bytes
     else:
         raise Exception(f"Error downloading PDF: {response.status_code}")
 
-def verify_pdf(file_path):
+def verify_pdf(pdf_bytes):
     try:
-        with open(file_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            if reader.is_encrypted:
-                raise Exception("Downloaded file is encrypted and cannot be processed.")
-            num_pages = len(reader.pages)
-            logging.info(f"PDF is valid and has {num_pages} pages.")
+        pdf_bytes.seek(0)  # Ensure we're at the start of the file
+        reader = PyPDF2.PdfReader(pdf_bytes)
+        if reader.is_encrypted:
+            raise Exception("Downloaded file is encrypted and cannot be processed.")
+        num_pages = len(reader.pages)
+        logging.info(f"PDF is valid and has {num_pages} pages.")
     except PyPDF2.errors.PdfReadError:
         raise Exception("Downloaded file is not a valid PDF.")
 
@@ -83,10 +80,11 @@ def get_upload_url(api_key_id, api_key_secret):
     else:
         raise Exception(f"Error fetching upload URL: {response.text}")
 
-def upload_pdf_file(upload_url, file_path):
-    verify_pdf(file_path)
-    with open(file_path, 'rb') as f:
-        response = requests.put(upload_url, data=f, headers={"Content-Type": "binary/octet-stream"})
+def upload_pdf_file(upload_url, pdf_bytes):
+    verify_pdf(pdf_bytes)
+    pdf_bytes.seek(0)  # Ensure we're at the start of the file
+    headers = {"Content-Type": "binary/octet-stream"}
+    response = requests.put(upload_url, data=pdf_bytes.read(), headers=headers)
     if response.status_code == 200:
         logging.info("File uploaded successfully")
     else:
@@ -137,26 +135,18 @@ def run_code(request_data: RunCodeRequest, request: Request):
         folder_title = request_data.folder_title
         folder_summary = request_data.folder_summary
 
-        # Generate a unique file name for concurrency safety
-        pdf_file_name = f"downloaded_pdf_{uuid.uuid4()}.pdf"
-
         # Step 1: Download the PDF file
-        download_pdf(pdf_url, pdf_file_name)
+        pdf_bytes = download_pdf(pdf_url)
 
         # Step 2: Get the pre-signed upload URL from RabbitSign
         upload_url = get_upload_url(api_key_id, api_key_secret)
         logging.info(f"Upload URL: {upload_url}")
 
         # Step 3: Upload the downloaded PDF to RabbitSign
-        upload_pdf_file(upload_url, pdf_file_name)
+        upload_pdf_file(upload_url, pdf_bytes)
 
         # Step 4: Create a folder that references the uploaded PDF
         folder_id = create_folder(upload_url, api_key_id, api_key_secret, signerInfo, folder_title, folder_summary)
-
-        # Clean up the downloaded file
-        if os.path.exists(pdf_file_name):
-            os.remove(pdf_file_name)
-            logging.info(f"Cleaned up the local file: {pdf_file_name}")
 
         # Return the folder ID or any other relevant URL
         return {"folder_id": folder_id}
@@ -164,7 +154,3 @@ def run_code(request_data: RunCodeRequest, request: Request):
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# You can run the application with the following command
-# uvicorn app:app --reload
-
