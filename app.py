@@ -1,6 +1,7 @@
+# app.py
+
 from fastapi import FastAPI, Request, HTTPException
-from starlette.responses import JSONResponse
-from models import RunCodeRequest
+from models import RunCodeRequest, GetFolderInfoRequest  # Import request models
 import requests
 import hashlib
 from datetime import datetime
@@ -10,7 +11,7 @@ import logging
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from io import BytesIO  # Import BytesIO
+from io import BytesIO
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -26,7 +27,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Valid API keys for authenticating requests to this endpoint
-# Replace 'your_api_key_here' with your actual API key
+# Replace 'your_api_key_here' with your actual API key(s)
 VALID_API_KEYS = ["your_api_key_here"]
 
 def authenticate_api_key(api_key: str):
@@ -37,7 +38,7 @@ def download_pdf(url):
     response = requests.get(url, allow_redirects=True)
     if response.status_code == 200:
         pdf_bytes = BytesIO(response.content)
-        logging.info(f"PDF downloaded successfully.")
+        logging.info("PDF downloaded successfully.")
         return pdf_bytes
     else:
         raise Exception(f"Error downloading PDF: {response.status_code}")
@@ -121,6 +122,25 @@ def create_folder(file_url, api_key_id, api_key_secret, signerInfo, folder_title
     else:
         raise Exception(f"Error creating folder: {response.text}")
 
+def fetch_folder_info(api_key_id, api_key_secret, folder_id):
+    url = f"https://www.rabbitsign.com/api/v1/folder/{folder_id}"
+    utc_time = get_utc_time()
+    path = f"/api/v1/folder/{folder_id}"
+    signature = generate_signature("GET", path, utc_time, api_key_secret)
+    headers = {
+        "x-rabbitsign-api-time-utc": utc_time,
+        "x-rabbitsign-api-key-id": api_key_id,
+        "x-rabbitsign-api-signature": signature,
+        "Accept": "*/*"
+    }
+    response = requests.get(url, headers=headers)
+    logging.info(f"Folder info response: {response.status_code}")
+    if response.status_code == 200:
+        folder_info = response.json()
+        return folder_info
+    else:
+        raise Exception(f"Error fetching folder info: {response.text}")
+
 @app.post('/run_code')
 @limiter.limit("5/second")
 def run_code(request_data: RunCodeRequest, request: Request):
@@ -148,8 +168,35 @@ def run_code(request_data: RunCodeRequest, request: Request):
         # Step 4: Create a folder that references the uploaded PDF
         folder_id = create_folder(upload_url, api_key_id, api_key_secret, signerInfo, folder_title, folder_summary)
 
-        # Return the folder ID or any other relevant URL
+        # Return the folder ID
         return {"folder_id": folder_id}
+
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/get_folder_info')
+@limiter.limit("5/second")
+def get_folder_info_endpoint(request_data: GetFolderInfoRequest, request: Request):
+    # Authenticate the API key
+    authenticate_api_key(request_data.api_key)
+
+    try:
+        api_key_id = request_data.api_key_id
+        api_key_secret = request_data.api_key_secret
+        folder_id = request_data.folder_id
+
+        # Fetch folder information from RabbitSign
+        folder_info = fetch_folder_info(api_key_id, api_key_secret, folder_id)
+
+        # Extract the downloadUrl from folder_info
+        download_url = folder_info.get('downloadUrl', '')
+        if not download_url:
+            # Handle case where downloadUrl is empty
+            logging.warning("No download URL available for this folder.")
+            return {"message": "No download URL available for this folder."}
+
+        return {"download_url": download_url}
 
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
