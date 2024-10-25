@@ -108,7 +108,7 @@ def create_folder(file_url, api_key_id, api_key_secret, signerInfo, folder_title
             "docInfo": [
                 {
                     "url": file_url,
-                    "docTitle": "UploadedDocument.pdf"
+                    "docTitle": f"{folder_title}.pdf"
                 }
             ],
             "signerInfo": signerInfo
